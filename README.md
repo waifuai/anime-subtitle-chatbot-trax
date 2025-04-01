@@ -43,7 +43,7 @@ This project was migrated from an older `trax` implementation due to dependency 
     This script will:
     *   Load the `distilgpt2` tokenizer.
     *   Add a special separator token (`<|sep|>`).
-    *   Combine lines into the format: `input_phrase<|sep|>response_phrase<|endoftext|>`
+    *   Combine lines into the format: `input_phrase<|sep|>response_phrase<|eos|>`
     *   Save the result to `src/local_data/data/train.txt`.
 
 ## Training
@@ -80,7 +80,6 @@ python src/scripts/predict.py --input_file path/to/your_prompts.txt --output_fil
 
 ```
 .
-├── plans/                      # Contains planning documents (e.g., rewrite plan)
 ├── src/
 │   ├── anime_chatbot/          # Core module definition (mainly setup.py)
 │   │   ├── __init__.py

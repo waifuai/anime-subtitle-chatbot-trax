@@ -24,19 +24,22 @@ def train_model(
 
     # --- Tokenizer and Model Setup ---
     sep_token = "<|sep|>"
+    eos_token = "<|eos|>" # Define the new EOS token
     print(f"Loading tokenizer: {model_name}")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-    # Add the separator token if it wasn't saved with the tokenizer (should be added)
-    if sep_token not in tokenizer.additional_special_tokens:
-        special_tokens_dict = {'sep_token': sep_token}
-        tokenizer.add_special_tokens(special_tokens_dict)
-        print(f"Added special token: {sep_token}")
+    # Define and add special tokens (sep and new eos)
+    # This ensures they are added before resizing embeddings
+    special_tokens_dict = {'sep_token': sep_token, 'eos_token': eos_token}
+    num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
+    if num_added_toks > 0:
+        print(f"Added {num_added_toks} special token(s): {special_tokens_dict}")
 
     # Set pad token if None
+    # Set pad token to the new EOS token if pad_token is not set
     if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-        print(f"Set pad_token to eos_token: {tokenizer.pad_token}")
+        tokenizer.pad_token = eos_token # Use the new eos_token string
+        print(f"Set pad_token to new eos_token: {tokenizer.pad_token}")
 
     print(f"Loading model: {model_name}")
     model = AutoModelForCausalLM.from_pretrained(model_name)

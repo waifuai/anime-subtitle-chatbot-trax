@@ -14,21 +14,22 @@ def prepare_data(data_dir="src/local_data/data", model_name="distilgpt2"):
     # --- Tokenizer Setup ---
     # Define special tokens
     sep_token = "<|sep|>"
-    # GPT2 uses <|endoftext|> as its EOS token by default
+    eos_token = "<|eos|>" # Define the new EOS token
     
     print(f"Loading tokenizer: {model_name}")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-    # Add the separator token
-    special_tokens_dict = {'sep_token': sep_token}
+    # Add the new special tokens
+    special_tokens_dict = {'sep_token': sep_token, 'eos_token': eos_token}
     num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
-    print(f"Added {num_added_toks} special token(s).")
+    print(f"Added {num_added_toks} special token(s): {special_tokens_dict}")
     # Note: The model's embeddings will need resizing later during training setup
 
     # Ensure pad token is set (GPT2 usually doesn't have one by default)
+    # Set pad token to the new EOS token if pad_token is not set
     if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-        print(f"Set pad_token to eos_token: {tokenizer.pad_token}")
+        tokenizer.pad_token = eos_token # Use the newly defined eos_token string
+        print(f"Set pad_token to new eos_token: {tokenizer.pad_token}")
 
     # --- Data Processing ---
     print(f"Reading data from {input_file} and {output_file}")
@@ -44,7 +45,7 @@ def prepare_data(data_dir="src/local_data/data", model_name="distilgpt2"):
 
                 if inp_line and tgt_line: # Ensure lines are not empty
                     # Format: input<SEP>response<EOS>
-                    combined_line = f"{inp_line}{tokenizer.sep_token}{tgt_line}{tokenizer.eos_token}\n"
+                    combined_line = f"{inp_line}{sep_token}{tgt_line}{eos_token}\n" # Use variables
                     ftrain.write(combined_line)
                     count += 1
                 else:
