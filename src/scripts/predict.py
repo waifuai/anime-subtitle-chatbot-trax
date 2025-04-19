@@ -6,7 +6,7 @@ import google.generativeai as genai
 # --- Constants ---
 DEFAULT_DATA_DIR = "src/local_data/data"
 API_KEY_FILENAME = ".api-gemini"
-MODEL_NAME = "models/gemini-1.5-flash-latest" # Using the specified model
+MODEL_NAME = "models/gemini-2.5-flash-preview-04-17" # Using the specified model
 
 # --- Helper Functions ---
 
