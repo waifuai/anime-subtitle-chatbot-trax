@@ -1,10 +1,10 @@
-# Anime Subtitle Chatbot with Hugging Face Transformers
+# Anime Subtitle Chatbot with Google Gemini
 
-A chatbot fine-tuned on the [Anime Subtitles Dataset](https://www.kaggle.com/jef1056/anime-subtitles) using Hugging Face `transformers` and the `distilgpt2` model. Generates contextual responses to anime dialogue inputs.
+A chatbot that uses the Google Gemini API (`gemini-1.5-flash-latest`) to generate contextual responses to anime dialogue inputs, using few-shot prompting based on the [Anime Subtitles Dataset](https://www.kaggle.com/jef1056/anime-subtitles).
 
-This project was migrated from an older `trax` implementation due to dependency issues.
+This project was migrated from an older `trax` implementation and subsequently refactored from a local Hugging Face `distilgpt2` model to use the Gemini API.
 
-## Installation
+## Setup
 
 1.  **Clone the repository:**
     ```bash
@@ -31,42 +31,26 @@ This project was migrated from an older `trax` implementation due to dependency 
     # Or using pip
     pip install -e ./src/anime_chatbot[test]
     ```
-    *Note: This will install PyTorch. Ensure you have the correct version (CPU or CUDA) for your system. Refer to the [PyTorch installation guide](https://pytorch.org/get-started/locally/) if needed.*
+    This will install the `google-generativeai` library and `pytest` for testing.
 
-## Dataset Preparation
+4.  **Set up API Key:**
+    *   Obtain an API key from [Google AI Studio](https://aistudio.google.com/app/apikey).
+    *   Create a file named `.api-gemini` in your **home directory** (e.g., `~/.api-gemini` on Linux/macOS or `C:\Users\YourUsername\.api-gemini` on Windows).
+    *   Paste your API key into this file on a single line and save it. The script will read the key from this location.
 
-1.  Download the dataset from Kaggle (or use your own paired input/response data). Place the raw text files named `input.txt` (one input phrase per line) and `output.txt` (corresponding response phrases) in the `src/local_data/data/` directory.
-2.  Run the data preparation script. This combines the input and output files into a single `train.txt` file formatted for fine-tuning `distilgpt2`.
-    ```bash
-    python src/scripts/prep_data.py
-    ```
-    This script will:
-    *   Load the `distilgpt2` tokenizer.
-    *   Add a special separator token (`<|sep|>`).
-    *   Combine lines into the format: `input_phrase<|sep|>response_phrase<|eos|>`
-    *   Save the result to `src/local_data/data/train.txt`.
-
-## Training
-
-Fine-tune the `distilgpt2` model on the prepared dataset:
-```bash
-python src/scripts/train.py
-```
-*   This script loads the pre-trained `distilgpt2` model and tokenizer.
-*   It loads the `train.txt` dataset.
-*   It fine-tunes the model using the `Trainer` API.
-*   The fine-tuned model and tokenizer will be saved to `src/local_data/model/`.
-*   Training uses CUDA (GPU) if available, otherwise CPU. Adjust `batch_size` in the script based on your GPU memory.
+5.  **Prepare Example Data:** (Optional but Recommended for better results)
+    *   Place paired input/response text files named `input.txt` (one input phrase per line) and `output.txt` (corresponding response phrases) in the `src/local_data/data/` directory. These will be used for few-shot prompting. The repository includes example files.
 
 ## Prediction
 
-Generate responses using the fine-tuned model:
+Generate responses using the Gemini API via the prediction script:
 
 **Interactive Mode:**
 ```bash
+# Ensure your virtual environment is active
 python src/scripts/predict.py
 ```
-Enter input phrases at the prompt. Type `quit` to exit.
+Enter input phrases at the prompt. Type `quit` or press `Ctrl+D` to exit.
 
 **Batch Mode:**
 ```bash
@@ -74,7 +58,7 @@ python src/scripts/predict.py --input_file path/to/your_prompts.txt --output_fil
 ```
 *   `--input_file`: Path to a file with one input prompt per line.
 *   `--output_file`: (Optional) Path to save the generated responses. Defaults to `output_responses.txt` in the current directory.
-*   Other generation parameters (like `--max_length`, `--num_beams`) can be adjusted via command-line arguments. See `python src/scripts/predict.py --help`.
+*   `--data_dir`: (Optional) Path to the directory containing `input.txt` and `output.txt` for few-shot examples. Defaults to `src/local_data/data/`. See `python src/scripts/predict.py --help`.
 
 ## Project Structure
 
@@ -84,15 +68,12 @@ python src/scripts/predict.py --input_file path/to/your_prompts.txt --output_fil
 │   ├── anime_chatbot/          # Core module definition (mainly setup.py)
 │   │   ├── __init__.py
 │   │   └── setup.py
-│   ├── local_data/             # Data/model storage (gitignored by default)
-│   │   ├── data/               # Processed datasets (input.txt, output.txt, train.txt)
-│   │   └── model/              # Fine-tuned model/tokenizer
-│   ├── scripts/                # Python scripts for data prep, training, prediction
-│   │   ├── prep_data.py
-│   │   ├── train.py
+│   ├── local_data/             # Data storage (gitignored by default)
+│   │   └── data/               # Example input/output files for few-shot prompting
+│   ├── scripts/                # Python script for prediction
 │   │   └── predict.py
 │   └── tests/                  # Pytest tests
-│       └── test_chatbot.py     # Placeholder for new tests
+│       └── test_chatbot.py
 ├── .gitignore
 ├── LICENSE
 ├── pytest.ini
@@ -101,4 +82,4 @@ python src/scripts/predict.py --input_file path/to/your_prompts.txt --output_fil
 
 ## Model Architecture
 
-This project uses the `distilgpt2` model from Hugging Face, fine-tuned for the dialogue response generation task using a specific input format (`input<SEP>response<EOS>`).
+This project uses the Google Gemini API (`gemini-1.5-flash-latest` model) to generate dialogue responses. It employs few-shot prompting, providing the API with examples from `input.txt` and `output.txt` to guide the generation style and context. No local model training or fine-tuning is performed.

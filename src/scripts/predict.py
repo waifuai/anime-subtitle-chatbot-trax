@@ -1,118 +1,125 @@
-import torch
 import argparse
 import os
-from transformers import AutoTokenizer, AutoModelForCausalLM
+import pathlib
+import google.generativeai as genai
 
-# Moved generate_response outside the main predict function for testability
-def generate_response(
-    prompt_text,
-    model,
-    tokenizer,
-    device,
-    sep_token,
-    max_length=100,
-    num_beams=5,
-    no_repeat_ngram_size=2,
-    early_stopping=True,
-):
-    """Generates a response for a given prompt using the model."""
-    # Format input: "input<SEP>"
-    formatted_prompt = f"{prompt_text}{sep_token}"
-    inputs = tokenizer(formatted_prompt, return_tensors="pt").to(device)
+# --- Constants ---
+DEFAULT_DATA_DIR = "src/local_data/data"
+API_KEY_FILENAME = ".api-gemini"
+MODEL_NAME = "models/gemini-1.5-flash-latest" # Using the specified model
 
-    # Generate output sequence
-    output_sequences = model.generate(
-        input_ids=inputs['input_ids'],
-        attention_mask=inputs['attention_mask'], # Include attention mask
-        max_length=inputs['input_ids'].shape[1] + max_length, # Max length relative to input
-        num_beams=num_beams,
-        no_repeat_ngram_size=no_repeat_ngram_size,
-        early_stopping=early_stopping,
-        pad_token_id=tokenizer.pad_token_id,
-        eos_token_id=tokenizer.eos_token_id,
-    )
+# --- Helper Functions ---
 
-    # Decode the generated sequence, skipping special tokens and the prompt
-    generated_text = tokenizer.decode(
-        output_sequences[0], # Get the first sequence from the batch
-        skip_special_tokens=False # Keep special tokens initially for splitting
-    )
+def load_api_key(api_key_path: pathlib.Path) -> str | None:
+    """Loads the Gemini API key from the specified path."""
+    try:
+        with open(api_key_path, 'r', encoding='utf-8') as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        print(f"Error: API key file not found at {api_key_path}")
+        print("Please create the file and add your Gemini API key.")
+        return None
+    except Exception as e:
+        print(f"An error occurred reading the API key file: {e}")
+        return None
 
-    # Extract only the response part after the separator
-    # Find the separator token in the generated text
-    parts = generated_text.split(sep_token)
-    if len(parts) > 1:
-        # Get the part after the separator and remove the EOS token
-        response = parts[1].replace(tokenizer.eos_token, "").strip()
-        return response
-    else:
-        # If separator not found (shouldn't happen ideally), return decoded output minus prompt
-        prompt_tokens_len = inputs['input_ids'].shape[1]
-        response_tokens = output_sequences[0][prompt_tokens_len:]
-        response = tokenizer.decode(response_tokens, skip_special_tokens=True).strip()
-        # Add a fallback log or warning here if needed
-        print(f"Warning: Separator token '{sep_token}' not found in generated text: {generated_text}")
-        return response
+def load_examples(input_path: str, output_path: str) -> list[tuple[str, str]]:
+    """Loads dialogue examples from input and output files."""
+    examples = []
+    try:
+        with open(input_path, 'r', encoding='utf-8') as fin, \
+             open(output_path, 'r', encoding='utf-8') as fout:
+            for inp_line, out_line in zip(fin, fout):
+                inp = inp_line.strip()
+                out = out_line.strip()
+                if inp and out:
+                    examples.append((inp, out))
+    except FileNotFoundError:
+        print(f"Error: Example file not found at {input_path} or {output_path}")
+        print("Please ensure 'input.txt' and 'output.txt' exist.")
+        return [] # Return empty list on error
+    except Exception as e:
+        print(f"An error occurred loading examples: {e}")
+        return [] # Return empty list on error
+    return examples
+
+def generate_gemini_response(api_key: str, prompt_text: str, examples: list[tuple[str, str]]) -> str | None:
+    """Generates a response using the Gemini API with few-shot prompting."""
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel(MODEL_NAME)
+
+        # Construct the few-shot prompt
+        prompt_parts = [
+            "You are an anime chatbot. Given an input dialogue line, generate a relevant response in the style of anime subtitles.",
+            "Follow the format of the examples.",
+            "\n---\n"
+        ]
+        for inp, outp in examples:
+            prompt_parts.append(f"Input: {inp}")
+            prompt_parts.append(f"Output: {outp}")
+            prompt_parts.append("---") # Separator between examples
+
+        # Add the actual user input
+        prompt_parts.append(f"Input: {prompt_text}")
+        prompt_parts.append("Output:") # Ask the model to complete
+
+        full_prompt = "\n".join(prompt_parts)
+
+        # print(f"\n--- Sending Prompt ---\n{full_prompt}\n----------------------\n") # Uncomment for debugging
+
+        response = model.generate_content(full_prompt)
+
+        # print(f"\n--- Received Response ---\n{response}\n-------------------------\n") # Uncomment for debugging
+
+        # Extract text, handling potential blocks or errors
+        if response.parts:
+             return response.text.strip()
+        elif response.prompt_feedback and response.prompt_feedback.block_reason:
+             print(f"Warning: Prompt blocked. Reason: {response.prompt_feedback.block_reason}")
+             return f"[Blocked: {response.prompt_feedback.block_reason}]"
+        else:
+             # Attempt to access text even if parts might be empty (covers edge cases)
+             try:
+                 return response.text.strip()
+             except ValueError: # Handle cases where response.text might raise error
+                 print("Warning: Could not extract text from Gemini response.")
+                 print(f"Full Response Object: {response}")
+                 return "[Error: Could not parse response]"
 
 
-def predict(
-    model_dir="src/local_data/model",
-    input_file=None,
-    output_file=None,
-    max_length=100, # Max length for generated response
-    num_beams=5,    # Beam search parameters
-    no_repeat_ngram_size=2,
-    early_stopping=True,
-):
+    except Exception as e:
+        print(f"An error occurred calling the Gemini API: {e}")
+        # You might want to inspect the specific exception type for more robust handling
+        # e.g., handle google.api_core.exceptions.PermissionDenied separately
+        return None
+
+# --- Main Prediction Logic ---
+
+def predict(input_file=None, output_file=None, data_dir=DEFAULT_DATA_DIR):
     """
-    Loads the model and tokenizer, then generates responses.
+    Loads API key and examples, then generates responses using Gemini API.
     Supports interactive mode or batch processing from a file.
     """
-    print(f"Loading model and tokenizer from {model_dir}...")
-    try:
-        # Load with trust_remote_code=True if necessary for custom models/tokenizers
-        tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
-        model = AutoModelForCausalLM.from_pretrained(model_dir, trust_remote_code=True)
-    except OSError:
-        print(f"Error: Model or tokenizer not found in {model_dir}.")
-        print("Please ensure the model has been trained and saved.")
-        return
-    except Exception as e:
-        print(f"An error occurred loading the model/tokenizer: {e}")
-        return
+    # --- Load API Key ---
+    api_key_path = pathlib.Path.home() / API_KEY_FILENAME
+    api_key = load_api_key(api_key_path)
+    if not api_key:
+        return # Exit if API key is missing
 
-    # --- Device Setup ---
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
-    print(f"Using device: {device}")
-
-    # Ensure pad token is set for generation
-    # Ensure pad token is set (use the EOS token if not specified)
-    if tokenizer.pad_token is None:
-        if tokenizer.eos_token is None:
-             # Fallback if EOS is somehow also None (shouldn't happen with saved tokenizer)
-             print("Warning: Tokenizer has no pad_token and no eos_token. Generation might fail.")
-             # Handle this case appropriately, maybe raise an error or set a default?
-             # For now, let's try setting a default, though this indicates a problem.
-             tokenizer.add_special_tokens({'pad_token': '<|pad|>'}) # Add a default pad token
-             print("Added default pad token '<|pad|>'.")
-        else:
-             tokenizer.pad_token = tokenizer.eos_token
-             print(f"Set pad_token to eos_token: {tokenizer.pad_token}")
-
-
-    # Determine the separator token - prioritize tokenizer's definition
-    sep_token = getattr(tokenizer, 'sep_token', '<|sep|>') # Use getattr for safer access
-    if not sep_token: # Handle cases where sep_token might be None or empty
-        sep_token = "<|sep|>"
-        print(f"Warning: Tokenizer's sep_token is missing or empty. Using default: {sep_token}")
-
+    # --- Load Examples ---
+    input_example_path = os.path.join(data_dir, 'input.txt')
+    output_example_path = os.path.join(data_dir, 'output.txt')
+    examples = load_examples(input_example_path, output_example_path)
+    if not examples:
+        print("No examples loaded, proceeding without few-shot examples in prompt.")
+        # Continue, but the prompt quality might be lower
 
     # --- Mode Selection ---
     if input_file:
         # Batch mode
-        print(f"Batch mode: Reading from {input_file}, writing to {output_file or 'output_responses.txt'}")
         output_filename = output_file or "output_responses.txt"
+        print(f"Batch mode: Reading from {input_file}, writing to {output_filename}")
         try:
             with open(input_file, 'r', encoding='utf-8') as fin, \
                  open(output_filename, 'w', encoding='utf-8') as fout:
@@ -120,19 +127,11 @@ def predict(
                 for line in fin:
                     prompt = line.strip()
                     if prompt:
-                        # Call the refactored generate_response function
-                        response = generate_response(
-                            prompt_text=prompt,
-                            model=model,
-                            tokenizer=tokenizer,
-                            device=device,
-                            sep_token=sep_token,
-                            max_length=max_length,
-                            num_beams=num_beams,
-                            no_repeat_ngram_size=no_repeat_ngram_size,
-                            early_stopping=early_stopping,
-                        )
-                        fout.write(response + '\n')
+                        response = generate_gemini_response(api_key, prompt, examples)
+                        if response:
+                            fout.write(response + '\n')
+                        else:
+                            fout.write("[Error generating response]\n") # Indicate failure
                         count += 1
                         if count % 10 == 0:
                             print(f"Processed {count} lines...")
@@ -145,42 +144,29 @@ def predict(
         # Interactive mode
         print("Interactive mode. Enter 'quit' to exit.")
         while True:
-            prompt = input("Input: ")
+            try:
+                prompt = input("Input: ")
+            except EOFError: # Handle Ctrl+D or similar EOF signals
+                print("\nExiting.")
+                break
             if prompt.lower() == 'quit':
                 break
             if prompt:
-                # Call the refactored generate_response function
-                response = generate_response(
-                    prompt_text=prompt,
-                    model=model,
-                    tokenizer=tokenizer,
-                    device=device,
-                    sep_token=sep_token,
-                    max_length=max_length,
-                    num_beams=num_beams,
-                    no_repeat_ngram_size=no_repeat_ngram_size,
-                    early_stopping=early_stopping,
-                )
-                print(f"Response: {response}")
+                response = generate_gemini_response(api_key, prompt, examples)
+                if response:
+                    print(f"Response: {response}")
+                else:
+                    print("Failed to get response from API.")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate responses using the fine-tuned chatbot model.")
-    parser.add_argument("--model_dir", type=str, default="src/local_data/model", help="Directory containing the fine-tuned model and tokenizer.")
+    parser = argparse.ArgumentParser(description="Generate anime dialogue responses using the Gemini API.")
     parser.add_argument("--input_file", type=str, default=None, help="Path to a file containing input prompts (one per line) for batch mode.")
     parser.add_argument("--output_file", type=str, default=None, help="Path to save the generated responses in batch mode (defaults to output_responses.txt).")
-    parser.add_argument("--max_length", type=int, default=100, help="Maximum number of tokens to generate for the response.")
-    parser.add_argument("--num_beams", type=int, default=5, help="Number of beams for beam search.")
-    parser.add_argument("--no_repeat_ngram_size", type=int, default=2, help="Size of n-grams that cannot be repeated.")
-    parser.add_argument("--early_stopping", action=argparse.BooleanOptionalAction, default=True, help="Enable/disable early stopping in beam search.")
-
+    parser.add_argument("--data_dir", type=str, default=DEFAULT_DATA_DIR, help="Directory containing input.txt and output.txt for examples.")
 
     args = parser.parse_args()
     predict(
-        model_dir=args.model_dir,
         input_file=args.input_file,
         output_file=args.output_file,
-        max_length=args.max_length,
-        num_beams=args.num_beams,
-        no_repeat_ngram_size=args.no_repeat_ngram_size,
-        early_stopping=args.early_stopping,
+        data_dir=args.data_dir,
     )

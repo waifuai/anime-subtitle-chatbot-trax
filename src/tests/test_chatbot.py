@@ -1,177 +1,184 @@
 import pytest
 import os
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+import pathlib
+from unittest.mock import MagicMock, patch, mock_open
 
-# Import functions from the scripts
-from src.scripts import prep_data
-from src.scripts.predict import generate_response # Import the refactored function
-from transformers import AutoTokenizer # Needed for prep_data test
+# Import functions from the updated predict script
+from src.scripts.predict import (
+    load_api_key,
+    load_examples,
+    generate_gemini_response,
+    predict, # Import main function for potential CLI tests later
+    API_KEY_FILENAME,
+    MODEL_NAME
+)
 
-# --- Test Data Preparation ---
+# --- Test Helper Functions ---
 
-def test_data_preparation(tmp_path):
-    """Tests the prep_data.prepare_data function."""
+def test_load_examples_success(tmp_path):
+    """Tests loading examples successfully."""
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     input_file = data_dir / "input.txt"
     output_file = data_dir / "output.txt"
-    train_file = data_dir / "train.txt"
 
-    # Create dummy input/output files
-    input_content = "Hello there.\nHow are you?\n"
-    output_content = "General Kenobi.\nI am fine.\n"
+    input_content = "Hello?\nHow are you?\n"
+    output_content = "Hi!\nI'm good.\n"
     input_file.write_text(input_content, encoding='utf-8')
     output_file.write_text(output_content, encoding='utf-8')
 
-    # Define expected tokens (use a real tokenizer instance for accuracy)
-    # Using distilgpt2 as specified in the plan
-    model_name = "distilgpt2"
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    sep_token = "<|sep|>"
-    eos_token = "<|eos|>" # Use the new EOS token
-    # Add both special tokens for the test tokenizer instance
-    tokenizer.add_special_tokens({'sep_token': sep_token, 'eos_token': eos_token})
+    examples = load_examples(str(input_file), str(output_file))
 
-    # Run the preparation function
-    prep_data.prepare_data(data_dir=str(data_dir), model_name=model_name)
+    assert len(examples) == 2
+    assert examples[0] == ("Hello?", "Hi!")
+    assert examples[1] == ("How are you?", "I'm good.")
 
-    # Assertions
-    assert train_file.exists()
-    content = train_file.read_text(encoding='utf-8').strip().splitlines()
-    assert len(content) == 2
-    expected_line1 = f"Hello there.{sep_token}General Kenobi.{eos_token}"
-    expected_line2 = f"How are you?{sep_token}I am fine.{eos_token}"
-    assert content[0] == expected_line1
-    assert content[1] == expected_line2
+def test_load_examples_file_not_found(tmp_path, capsys):
+    """Tests loading examples when files are missing."""
+    input_file = tmp_path / "nonexistent_input.txt"
+    output_file = tmp_path / "nonexistent_output.txt"
 
-def test_data_preparation_file_not_found(tmp_path, capsys):
-    """Tests prep_data handling of missing input files."""
+    examples = load_examples(str(input_file), str(output_file))
+    captured = capsys.readouterr()
+
+    assert examples == []
+    assert "Error: Example file not found" in captured.out
+
+def test_load_examples_empty_lines(tmp_path):
+    """Tests that empty lines are skipped when loading examples."""
     data_dir = tmp_path / "data"
-    # Don't create the directory or files
-    prep_data.prepare_data(data_dir=str(data_dir))
-    captured = capsys.readouterr()
-    assert "Error: Input or output file not found" in captured.out or "Error: Input or output file not found" in captured.err
+    data_dir.mkdir()
+    input_file = data_dir / "input.txt"
+    output_file = data_dir / "output.txt"
 
-# --- Test Prediction Logic ---
+    input_content = "Line 1\n\nLine 3"
+    output_content = "Resp 1\nResp 2\nResp 3" # Mismatched lines intentionally
+    input_file.write_text(input_content, encoding='utf-8')
+    output_file.write_text(output_content, encoding='utf-8')
 
-@pytest.fixture
-def mock_tokenizer():
-    """Fixture for a mocked tokenizer."""
-    tokenizer = MagicMock()
-    tokenizer.sep_token = "<|sep|>"
-    tokenizer.eos_token = "<|eos|>" # Use the new EOS token
-    # Assuming the new token gets a new ID, let's use a placeholder ID for the mock
-    # In reality, this ID would be determined when adding the token.
-    # Let's assume it's 50257 for the mock. Pad ID might also change.
-    tokenizer.pad_token_id = 50257 # Mock ID for new EOS/PAD
-    tokenizer.eos_token_id = 50257 # Mock ID for new EOS
-    # Mock the __call__ method to return an object with a .to() method
-    mock_tokenized_output = MagicMock()
-    mock_tensor_dict = {
-        'input_ids': MagicMock(shape=[1, 5]), # Mock tensor shape
-        'attention_mask': MagicMock()
-    }
-    # Configure the .to() method on the mock output object
-    mock_tokenized_output.to.return_value = mock_tensor_dict
-    # Make the tokenizer call return this mock object
-    tokenizer.return_value = mock_tokenized_output
-    # Mock the decode method
-    def mock_decode(ids, skip_special_tokens=False):
-        # Simulate decoding based on whether special tokens are skipped
-        if skip_special_tokens:
-            return "Generated response text"
-        else:
-            # Simulate raw output including prompt, sep, response, eos
-            return f"Input prompt{tokenizer.sep_token}Generated response text{tokenizer.eos_token}" # Uses the updated tokenizer.eos_token
-    tokenizer.decode = mock_decode
-    return tokenizer
+    examples = load_examples(str(input_file), str(output_file))
 
-@pytest.fixture
-def mock_model():
-    """Fixture for a mocked model."""
-    model = MagicMock()
-    # Mock the generate method to return some dummy output sequence
-    # The exact tensor content doesn't matter much here, just the structure
-    mock_output_tensor = MagicMock()
-    # Simulate slicing behavior for the fallback case in generate_response
-    mock_output_tensor.__getitem__.return_value = [1, 2, 3] # Dummy token IDs
-    model.generate.return_value = [mock_output_tensor] # Return a list containing the tensor
-    return model
+    # Only pairs with non-empty input and output are kept
+    assert len(examples) == 2
+    assert examples[0] == ("Line 1", "Resp 1")
+    assert examples[1] == ("Line 3", "Resp 3")
+
+
+def test_load_api_key_success(tmp_path):
+    """Tests loading the API key successfully."""
+    home_dir = tmp_path / "home"
+    home_dir.mkdir()
+    api_key_file = home_dir / API_KEY_FILENAME
+    api_key_content = "test_api_key_123"
+    api_key_file.write_text(api_key_content, encoding='utf-8')
+
+    with patch('pathlib.Path.home', return_value=home_dir):
+        api_key = load_api_key(api_key_file) # Pass the specific path for test isolation
+        assert api_key == api_key_content
+
+def test_load_api_key_file_not_found(tmp_path, capsys):
+    """Tests loading API key when the file is missing."""
+    home_dir = tmp_path / "home"
+    home_dir.mkdir()
+    api_key_file = home_dir / API_KEY_FILENAME # Path exists, but file doesn't
+
+    with patch('pathlib.Path.home', return_value=home_dir):
+        api_key = load_api_key(api_key_file)
+        captured = capsys.readouterr()
+        assert api_key is None
+        assert f"Error: API key file not found at {api_key_file}" in captured.out
+
+# --- Test Gemini API Interaction (using mocks) ---
 
 @pytest.fixture
-def mock_device():
-    """Fixture for a mocked device (CPU)."""
-    return "cpu" # Simulate running on CPU for tests
+def mock_gemini_client():
+    """Fixture for a mocked google.generativeai client and model."""
+    with patch('google.generativeai.configure') as mock_configure, \
+         patch('google.generativeai.GenerativeModel') as mock_GenerativeModel:
 
-def test_generate_response_normal(mock_model, mock_tokenizer, mock_device):
-    """Tests the generate_response function with mocked components."""
-    prompt = "Input prompt"
-    sep_token = mock_tokenizer.sep_token
+        mock_model_instance = MagicMock()
+        mock_response = MagicMock()
+        # Simulate a successful response with text
+        mock_response.parts = [MagicMock()] # Simulate having parts
+        mock_response.text = "Generated anime response."
+        mock_response.prompt_feedback = None # No blocking
+        mock_model_instance.generate_content.return_value = mock_response
 
-    response = generate_response(
-        prompt_text=prompt,
-        model=mock_model,
-        tokenizer=mock_tokenizer,
-        device=mock_device,
-        sep_token=sep_token,
-        max_length=50 # Example value
-    )
+        mock_GenerativeModel.return_value = mock_model_instance
+
+        yield {
+            "configure": mock_configure,
+            "GenerativeModel": mock_GenerativeModel,
+            "model_instance": mock_model_instance,
+            "mock_response": mock_response
+        }
+
+def test_generate_gemini_response_success(mock_gemini_client):
+    """Tests successful response generation using mocked Gemini API."""
+    api_key = "fake_key"
+    prompt = "User input prompt"
+    examples = [("Ex Input 1", "Ex Output 1"), ("Ex Input 2", "Ex Output 2")]
+
+    response_text = generate_gemini_response(api_key, prompt, examples)
 
     # Assertions
-    mock_tokenizer.assert_called_with(f"{prompt}{sep_token}", return_tensors="pt")
-    mock_model.generate.assert_called_once()
-    # Check if the decoded response is extracted correctly
-    assert response == "Generated response text"
+    mock_gemini_client["configure"].assert_called_once_with(api_key=api_key)
+    mock_gemini_client["GenerativeModel"].assert_called_once_with(MODEL_NAME)
+    mock_gemini_client["model_instance"].generate_content.assert_called_once()
 
-def test_generate_response_separator_fallback(mock_model, mock_tokenizer, mock_device, capsys):
-    """Tests the fallback logic when separator is not in the decoded output."""
-    prompt = "Input prompt"
-    sep_token = mock_tokenizer.sep_token
+    # Check prompt construction (basic check)
+    call_args, _ = mock_gemini_client["model_instance"].generate_content.call_args
+    generated_prompt = call_args[0]
+    assert "You are an anime chatbot." in generated_prompt
+    assert "Input: Ex Input 1" in generated_prompt
+    assert "Output: Ex Output 1" in generated_prompt
+    assert "Input: Ex Input 2" in generated_prompt
+    assert "Output: Ex Output 2" in generated_prompt
+    assert f"Input: {prompt}" in generated_prompt
+    assert generated_prompt.endswith("Output:")
 
-    # Modify the mock decode to *not* include the separator
-    mock_tokenizer.decode = MagicMock(return_value=f"Input prompt Generated response text{mock_tokenizer.eos_token}") # Uses updated mock_tokenizer.eos_token
+    assert response_text == "Generated anime response."
 
-    response = generate_response(
-        prompt_text=prompt,
-        model=mock_model,
-        tokenizer=mock_tokenizer,
-        device=mock_device,
-        sep_token=sep_token,
-        max_length=50
-    )
+def test_generate_gemini_response_blocked(mock_gemini_client, capsys):
+    """Tests handling of a blocked prompt response."""
+    api_key = "fake_key"
+    prompt = "Problematic prompt"
+    examples = []
 
-    # Assertions
+    # Configure mock response for blocking
+    mock_gemini_client["mock_response"].parts = [] # No parts when blocked
+    mock_gemini_client["mock_response"].text = None # No text when blocked
+    mock_gemini_client["mock_response"].prompt_feedback = MagicMock()
+    mock_gemini_client["mock_response"].prompt_feedback.block_reason = "SAFETY"
+    mock_gemini_client["model_instance"].generate_content.return_value = mock_gemini_client["mock_response"]
+
+
+    response_text = generate_gemini_response(api_key, prompt, examples)
     captured = capsys.readouterr()
-    assert f"Warning: Separator token '{sep_token}' not found" in captured.out
-    # The fallback uses decode with skip_special_tokens=True
-    mock_tokenizer.decode.assert_called_with([1, 2, 3], skip_special_tokens=True)
-    # Check if the fallback response is returned (based on the modified mock decode)
-    # This assertion depends on how the fallback decode is mocked.
-    # If the fallback decode (skip_special_tokens=True) returns "Generated response text", this works.
-    # Let's adjust the mock decode for the fallback scenario:
-    def complex_mock_decode(ids, skip_special_tokens=False):
-         if skip_special_tokens:
-             return "Fallback response" # Specific text for fallback
-         else:
-             return f"Input prompt Generated response text{mock_tokenizer.eos_token}" # Output without separator, uses updated mock_tokenizer.eos_token
-    mock_tokenizer.decode = complex_mock_decode
 
-    # Re-run with the adjusted mock
-    response = generate_response(
-        prompt_text=prompt,
-        model=mock_model,
-        tokenizer=mock_tokenizer,
-        device=mock_device,
-        sep_token=sep_token,
-        max_length=50
-    )
-    assert response == "Fallback response"
+    assert "Warning: Prompt blocked. Reason: SAFETY" in captured.out
+    assert response_text == "[Blocked: SAFETY]"
 
+def test_generate_gemini_response_api_error(mock_gemini_client, capsys):
+    """Tests handling of an exception during API call."""
+    api_key = "fake_key"
+    prompt = "User input"
+    examples = []
 
-# Placeholder for potential future tests (e.g., testing the main predict() CLI interaction)
-# def test_predict_cli_batch_mode(tmp_path):
+    # Configure mock to raise an exception
+    mock_gemini_client["model_instance"].generate_content.side_effect = Exception("API connection failed")
+
+    response_text = generate_gemini_response(api_key, prompt, examples)
+    captured = capsys.readouterr()
+
+    assert response_text is None
+    assert "An error occurred calling the Gemini API: API connection failed" in captured.out
+
+# --- Placeholder for potential future CLI tests ---
+# def test_predict_cli_batch_mode(tmp_path, mock_gemini_client):
+#     # Needs more setup: mock file I/O, mock Path.home, mock argparse
 #     pass
 
-# def test_predict_cli_interactive_mode():
+# def test_predict_cli_interactive_mode(mock_gemini_client):
+#     # Needs more setup: mock input(), mock Path.home
 #     pass

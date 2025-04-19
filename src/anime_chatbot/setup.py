@@ -2,9 +2,7 @@ from setuptools import find_packages
 from setuptools import setup
 
 REQUIRED_PACKAGES = [
-  'torch',
-  'transformers',
-  'datasets'
+  'google-generativeai'
 ]
 
 setup(

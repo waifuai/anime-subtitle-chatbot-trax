@@ -1,4 +1,5 @@
-# Anime Chatbot Problem
+# Anime Chatbot Core Package
 
-Definition of the `trax` problem for the task of 
-`Generate an anime subtitle response for an anime subtitle input sentence.`.
+This directory contains the core package setup (`setup.py`) for the Anime Subtitle Chatbot.
+
+The chatbot functionality itself is implemented in `src/scripts/predict.py` and utilizes the Google Gemini API to generate responses based on input dialogue.
